@@ -1,7 +1,10 @@
 package http
 
 import (
+	"errors"
+	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -13,10 +16,37 @@ const (
 )
 
 type Client interface {
-	Get(path string) *http.Request
-	Post(path string, body io.Reader) *http.Request
-	Put(path string, body io.Reader) *http.Request
-	Delete(path string) *http.Request
+	GetFrom(path string) (*http.Response, error)
+	PostTo(path string, body io.Reader) (*http.Response, error)
+	PutTo(path string, body io.Reader) (*http.Response, error)
+	DeleteFrom(path string) (*http.Response, error)
+
+	GetRequest(path string) (*http.Request, error)
+	PostRequest(path string, body io.Reader) (*http.Request, error)
+	PutRequest(path string, body io.Reader) (*http.Request, error)
+	DeleteRequest(path string) (*http.Request, error)
+}
+
+type RequestBuilder interface {
+	Get() RequestBuilder
+	Post() RequestBuilder
+	Put() RequestBuilder
+	Delete() RequestBuilder
+	Path(path string) RequestBuilder
+	QueryParam(key string, value string) RequestBuilder
+	WithContent(body io.Reader) RequestBuilder
+	AsJson() RequestBuilder
+	Request() (*http.Request, error)
+	Exec() (*http.Response, error)
+}
+
+type requestBuilder struct {
+	method      string
+	path        string
+	queryParams []string
+	body        io.Reader
+	request     *http.Request
+	accept      string
 }
 
 type HttpConfig struct {
@@ -27,8 +57,98 @@ type HttpConfig struct {
 }
 
 type HttpClient struct {
+	requestBuilder
 	client *http.Client
 	config *HttpConfig
+}
+
+func NewRequestBuilder() RequestBuilder {
+	return &requestBuilder{}
+}
+
+func (rb *requestBuilder) Get() RequestBuilder {
+	rb.method = http.MethodGet
+	return rb
+}
+
+func (rb *requestBuilder) Post() RequestBuilder {
+	rb.method = http.MethodPost
+	return rb
+}
+
+func (rb *requestBuilder) Put() RequestBuilder {
+	rb.method = http.MethodPut
+	return rb
+}
+
+func (rb *requestBuilder) Delete() RequestBuilder {
+	rb.method = http.MethodDelete
+	return rb
+}
+
+func (rb *requestBuilder) Path(path string) RequestBuilder {
+	rb.path = path
+	return rb
+}
+
+func (rb *requestBuilder) WithContent(body io.Reader) RequestBuilder {
+	rb.body = body
+	return rb
+}
+
+func (rb *requestBuilder) AsJson() RequestBuilder {
+	rb.accept = JSON_TYPE
+	return rb
+}
+
+func (rb *requestBuilder) QueryParam(key string, value string) RequestBuilder {
+	rb.queryParams = append(rb.queryParams, key, "=", value)
+	return rb
+}
+
+func (rb requestBuilder) Request() (*http.Request, error) {
+	request, error := http.NewRequest(rb.method, rb.path, rb.body)
+
+	if error != nil {
+		return request, error
+	}
+	return request, nil
+}
+
+// TODO: implement correctly
+func (rb requestBuilder) Exec() (*http.Response, error) {
+	if rb.request == nil {
+		return nil, errors.New("you must create a request using the request builder before calling Exec()")
+	}
+
+	return nil, nil
+}
+
+type NotFoundError struct {
+	Message string
+	Url     string
+}
+
+func (e NotFoundError) Error() string {
+	return e.Message
+}
+
+type UnauthorizedError struct {
+	Message string
+	Url     string
+}
+
+func (e UnauthorizedError) Error() string {
+	return e.Message
+}
+
+type RemoteError struct {
+	Host string
+	err  error
+}
+
+func (e RemoteError) Error() string {
+	return e.err.Error()
 }
 
 func NewHttpConfig(baseUrl string, username string, password string, accept string) *HttpConfig {
@@ -99,51 +219,93 @@ func NewDefaultHttpClient(baseUrl string) *HttpClient {
 	}
 }
 
-func (h *HttpClient) createRequest(endpoint string, method string, body io.Reader) *http.Request {
+func (h *HttpClient) GetFrom(path string) (*http.Response, error) {
+	request, error := createRequest(h.config.baseUrl, path, http.MethodGet, nil, h.config.username, h.config.password)
+	if error != nil {
+		return nil, error
+	}
+	return h.executeRequest(request)
+}
+
+func (h *HttpClient) PostTo(path string, body io.Reader) (*http.Response, error) {
+	request, error := createRequest(h.config.baseUrl, path, http.MethodPost, body, h.config.username, h.config.password)
+	if error != nil {
+		return nil, error
+	}
+	return h.executeRequest(request)
+}
+
+func (h *HttpClient) PutTo(path string, body io.Reader) (*http.Response, error) {
+	request, error := createRequest(h.config.baseUrl, path, http.MethodPut, body, h.config.username, h.config.password)
+	if error != nil {
+		return nil, error
+	}
+	return h.executeRequest(request)
+}
+
+func (h *HttpClient) DeleteFrom(path string) (*http.Response, error) {
+	request, error := createRequest(h.config.baseUrl, path, http.MethodDelete, nil, h.config.username, h.config.password)
+	if error != nil {
+		return nil, error
+	}
+	return h.executeRequest(request)
+}
+
+func (h *HttpClient) GetRequest(path string) (*http.Request, error) {
+	return createRequest(h.config.baseUrl, path, http.MethodGet, nil, h.config.username, h.config.password)
+}
+
+func (h *HttpClient) PostRequest(path string, body io.Reader) (*http.Request, error) {
+	return createRequest(h.config.baseUrl, path, http.MethodPost, body, h.config.username, h.config.password)
+}
+
+func (h *HttpClient) PutRequest(path string, body io.Reader) (*http.Request, error) {
+	return createRequest(h.config.baseUrl, path, http.MethodPut, body, h.config.username, h.config.password)
+}
+
+func (h *HttpClient) DeleteRequest(path string) (*http.Request, error) {
+	return createRequest(h.config.baseUrl, path, http.MethodDelete, nil, h.config.username, h.config.password)
+}
+
+func createRequest(baseUrl string, endpoint string, method string, body io.Reader, username string, password string) (*http.Request, error) {
 	// construct url by appending endpoint to base url
-	baseUrl := strings.TrimSuffix(h.config.baseUrl, "/")
+	baseUrl = strings.TrimSuffix(baseUrl, "/")
 
 	request, err := http.NewRequest(method, baseUrl+"/"+endpoint, body)
 	if err != nil {
-		panic(err)
+		return request, err
 	}
 
 	request.Header.Set("Content-Type", JSON_TYPE)
 	request.Header.Set("Accept", JSON_TYPE)
 
-	if h.config.username != "" && h.config.password != "" {
-		request.SetBasicAuth(h.config.username, h.config.password)
+	if username != "" && password != "" {
+		request.SetBasicAuth(username, password)
 	}
 
-	return request
+	return request, nil
 }
 
-func (h *HttpClient) executeRequest(r *http.Request) *http.Response {
+func (h *HttpClient) executeRequest(r *http.Request) (*http.Response, error) {
 	resp, error := h.client.Do(r)
 
 	if error != nil {
-		panic(error)
+		return handleError(resp, error)
 	}
 
-	return resp
+	return resp, nil
 }
 
-func (h *HttpClient) Get(endpoint string) *http.Response {
-	request := h.createRequest(endpoint, http.MethodGet, nil)
-	return h.executeRequest(request)
-}
+func handleError(resp *http.Response, error error) (*http.Response, error) {
+	log.Fatal(error)
 
-func (h *HttpClient) Post(endpoint string, body io.Reader) *http.Response {
-	request := h.createRequest(endpoint, http.MethodPost, body)
-	return h.executeRequest(request)
-}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return resp, &UnauthorizedError{Message: "Authentication required.", Url: resp.Request.URL.String()}
+	}
 
-func (h *HttpClient) Put(endpoint string, body io.Reader) *http.Response {
-	request := h.createRequest(endpoint, http.MethodPut, body)
-	return h.executeRequest(request)
-}
+	if resp.StatusCode == http.StatusNotFound {
+		return resp, &NotFoundError{Message: "Resource not found.", Url: resp.Request.URL.String()}
+	}
 
-func (h *HttpClient) Delete(endpoint string) *http.Response {
-	request := h.createRequest(endpoint, http.MethodDelete, nil)
-	return h.executeRequest(request)
+	return resp, &RemoteError{resp.Request.URL.Host, fmt.Errorf("%d: (%s)", resp.StatusCode, resp.Request.URL.String())}
 }

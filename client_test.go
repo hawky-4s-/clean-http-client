@@ -6,12 +6,15 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
 
 const (
-	fixture_baseUrl   = "https://github.com/hawky-4s-"
+	CONTENT_TYPE_JSON = "application/json"
+
+	fixture_baseUrl   = "https://github.com/camunda"
 	fixture_basicJson = "{ \"id\": 1 }"
 )
 
@@ -27,8 +30,8 @@ func TestDefaultHttpConfig(t *testing.T) {
 	if defaultHttpConfig.password != "" {
 		t.Errorf("Expected \"\" but got %s", defaultHttpConfig.password)
 	}
-	if defaultHttpConfig.accept != "application/json" {
-		t.Errorf("Expected \"application/json\" but got %s", defaultHttpConfig.accept)
+	if defaultHttpConfig.accept != CONTENT_TYPE_JSON {
+		t.Errorf("Expected '%s' but got %s", CONTENT_TYPE_JSON, defaultHttpConfig.accept)
 	}
 
 }
@@ -47,13 +50,13 @@ func TestNewDefaultHttpClient(t *testing.T) {
 	if httpConfig.password != "" {
 		t.Errorf("Expected \"\" but got %s", httpConfig.password)
 	}
-	if httpConfig.accept != "application/json" {
-		t.Errorf("Expected \"application/json\" but got %s", httpConfig.accept)
+	if httpConfig.accept != CONTENT_TYPE_JSON {
+		t.Errorf("Expected '%s' but got %s", CONTENT_TYPE_JSON, httpConfig.accept)
 	}
 }
 
 func TestNewHttpClient(t *testing.T) {
-	customHttpConfig := NewHttpConfig(fixture_baseUrl, "", "", "application/json")
+	customHttpConfig := NewHttpConfig(fixture_baseUrl, "", "", CONTENT_TYPE_JSON)
 	client := NewHttpClient(customHttpConfig)
 
 	httpConfig := client.config
@@ -67,63 +70,82 @@ func TestNewHttpClient(t *testing.T) {
 	if httpConfig.password != "" {
 		t.Errorf("Expected \"\", got %s", httpConfig.password)
 	}
-	if httpConfig.accept != "application/json" {
-		t.Errorf("Expected \"application/json\", got %s", httpConfig.accept)
+	if httpConfig.accept != CONTENT_TYPE_JSON {
+		t.Errorf("Expected '%s' but got %s", CONTENT_TYPE_JSON, httpConfig.accept)
 	}
 }
 
-func TestHttpClient_Get(t *testing.T) {
-	server := mockServer(http.StatusOK, "application/json", fixture_basicJson)
+func TestHttpClient_GetFrom(t *testing.T) {
+	server := mockServer(http.StatusOK, CONTENT_TYPE_JSON, fixture_basicJson)
 	defer server.Close()
 
 	client := createTestHttpClient(server.URL)
-	resp := client.Get("")
+	resp, _ := client.GetFrom("")
 
 	assertResponseHasStatus(resp, http.StatusOK, t)
 	assertResponseBodyIs(resp, fixture_basicJson, t)
 }
 
-func TestHttpClient_Post(t *testing.T) {
+func TestHttpClient_PostTo(t *testing.T) {
 	server := mockEchoServer(200)
 	defer server.Close()
 
 	client := createTestHttpClient(server.URL)
-	resp := client.Post("", strings.NewReader(fixture_basicJson))
+	resp, _ := client.PostTo("", strings.NewReader(fixture_basicJson))
 
 	assertResponseHasStatus(resp, http.StatusOK, t)
 	assertResponseBodyIs(resp, fixture_basicJson, t)
 }
 
-func TestHttpClient_Put(t *testing.T) {
+func TestHttpClient_PutTo(t *testing.T) {
 	server := mockEchoServer(200)
 	defer server.Close()
 
 	client := createTestHttpClient(server.URL)
-	resp := client.Post("", strings.NewReader(fixture_basicJson))
+	resp, _ := client.PutTo("", strings.NewReader(fixture_basicJson))
 
 	assertResponseHasStatus(resp, http.StatusOK, t)
 	assertResponseBodyIs(resp, fixture_basicJson, t)
 }
 
-func TestHttpClient_Delete(t *testing.T) {
+func TestHttpClient_DeleteFrom(t *testing.T) {
 	f := func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", CONTENT_TYPE_JSON)
 	}
 	server := mockServerWith(http.HandlerFunc(f))
 	defer server.Close()
 
 	client := createTestHttpClient(server.URL)
-	resp := client.Post("", strings.NewReader(fixture_basicJson))
+	resp, _ := client.DeleteFrom("")
 
 	assertResponseHasStatus(resp, http.StatusOK, t)
 	assertResponseBodyIs(resp, "", t)
 }
 
+func TestHttpClient_GetRequest(t *testing.T) {
+	client := createTestHttpClient(fixture_baseUrl)
+	req, _ := client.GetRequest("path")
+
+	assertUrlIs(req.URL, fixture_baseUrl+"/path", t)
+}
+
+func TestHttpClient_PostRequest(t *testing.T) {
+
+}
+
+func TestHttpClient_PutRequest(t *testing.T) {
+
+}
+
+func TestHttpClient_DeleteRequest(t *testing.T) {
+
+}
+
 func mockEchoServer(statusCode int) *httptest.Server {
 	f := func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(statusCode)
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", CONTENT_TYPE_JSON)
 
 		body := ""
 		if r.Body != nil {
@@ -152,7 +174,7 @@ func mockServerWith(handlerFunc http.HandlerFunc) *httptest.Server {
 	if handlerFunc == nil {
 		handlerFunc = func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(200)
-			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", CONTENT_TYPE_JSON)
 			fmt.Fprint(w, "{}")
 		}
 	}
@@ -161,7 +183,7 @@ func mockServerWith(handlerFunc http.HandlerFunc) *httptest.Server {
 }
 
 func createTestHttpClient(baseUrl string) *HttpClient {
-	config := NewHttpConfig(baseUrl, "", "", "application/json")
+	config := NewHttpConfig(baseUrl, "", "", CONTENT_TYPE_JSON)
 	return NewHttpClient(config)
 }
 
@@ -180,5 +202,20 @@ func assertResponseBodyIs(resp *http.Response, expectedValue string, t *testing.
 	expectedValueAsBytes := []byte(expectedValue)
 	if bytes.Compare(body, expectedValueAsBytes) != 0 {
 		t.Errorf("Expected body %s, got %s.", expectedValueAsBytes, body)
+	}
+}
+
+func assertUrlIs(actual *url.URL, expectedV interface{}, t *testing.T) {
+	switch expected := expectedV.(type) {
+	case string:
+		if expected != actual.String() {
+			t.Fail()
+		}
+	case *url.URL:
+		if expected != actual {
+			t.Fail()
+		}
+	default:
+		t.Errorf("Type not supported %v", expected)
 	}
 }
