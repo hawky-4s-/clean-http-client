@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,9 +13,11 @@ import (
 )
 
 const (
-	JSON_TYPE = "application/json"
+	jsonType              = "application/json"
+	defaultRequestTimeOut = 30 * time.Second
 )
 
+// Client provides a high-level API for working with HTTP requests and constructing them.
 type Client interface {
 	GetFrom(path string) (*http.Response, error)
 	PostTo(path string, body io.Reader) (*http.Response, error)
@@ -25,6 +28,12 @@ type Client interface {
 	PostRequest(path string, body io.Reader) (*http.Request, error)
 	PutRequest(path string, body io.Reader) (*http.Request, error)
 	DeleteRequest(path string) (*http.Request, error)
+	ExecuteRequest(r *http.Request) (*http.Response, error)
+
+	GetFromWithContext(ctx context.Context, path string) (*http.Response, error)
+	PostToWithContext(ctx context.Context, path string, body io.Reader) (*http.Response, error)
+	PutToWithContext(ctx context.Context, path string, body io.Reader) (*http.Response, error)
+	DeleteFromWithContext(ctx context.Context, path string) (*http.Response, error)
 }
 
 type RequestBuilder interface {
@@ -49,13 +58,15 @@ type requestBuilder struct {
 	accept      string
 }
 
+// HttpConfig holds the base configuration for the HttpClient.
 type HttpConfig struct {
-	baseUrl  string
+	baseURL  string
 	username string
 	password string
 	accept   string
 }
 
+// HttpClient wraps the underlying http.Client and its HttpConfig.
 type HttpClient struct {
 	requestBuilder
 	client *http.Client
@@ -97,7 +108,7 @@ func (rb *requestBuilder) WithContent(body io.Reader) RequestBuilder {
 }
 
 func (rb *requestBuilder) AsJson() RequestBuilder {
-	rb.accept = JSON_TYPE
+	rb.accept = jsonType
 	return rb
 }
 
@@ -107,10 +118,10 @@ func (rb *requestBuilder) QueryParam(key string, value string) RequestBuilder {
 }
 
 func (rb requestBuilder) Request() (*http.Request, error) {
-	request, error := http.NewRequest(rb.method, rb.path, rb.body)
+	request, err := http.NewRequest(rb.method, rb.path, rb.body)
 
-	if error != nil {
-		return request, error
+	if err != nil {
+		return request, err
 	}
 	return request, nil
 }
@@ -124,24 +135,28 @@ func (rb requestBuilder) Exec() (*http.Response, error) {
 	return nil, nil
 }
 
+// NotFoundError allows to check for the not found url
 type NotFoundError struct {
 	Message string
-	Url     string
+	URL     string
 }
 
 func (e NotFoundError) Error() string {
 	return e.Message
 }
 
+// UnauthorizedError contains the rejected URL and Status
 type UnauthorizedError struct {
 	Message string
-	Url     string
+	URL     string
+	Status  int
 }
 
 func (e UnauthorizedError) Error() string {
 	return e.Message
 }
 
+// RemoteError
 type RemoteError struct {
 	Host string
 	err  error
@@ -151,12 +166,12 @@ func (e RemoteError) Error() string {
 	return e.err.Error()
 }
 
-func NewHttpConfig(baseUrl string, username string, password string, accept string) *HttpConfig {
+func NewHttpConfig(baseURL string, username string, password string, accept string) *HttpConfig {
 	config := &HttpConfig{
-		baseUrl:  baseUrl,
+		baseURL:  baseURL,
 		username: username,
 		password: password,
-		accept:   JSON_TYPE,
+		accept:   jsonType,
 	}
 
 	if accept != "" {
@@ -166,27 +181,25 @@ func NewHttpConfig(baseUrl string, username string, password string, accept stri
 	return config
 }
 
-func DefaultHttpConfig(baseUrl string) *HttpConfig {
-	return NewHttpConfig(baseUrl, "", "", JSON_TYPE)
+func DefaultHttpConfig(baseURL string) *HttpConfig {
+	return NewHttpConfig(baseURL, "", "", jsonType)
 }
 
-/**
- * Create a new HTTPClient with a custom transport for clean resource usage
- */
+// Create a new HttpClient with a custom transport for clean resource usage
 func NewHttpClient(config *HttpConfig) *HttpClient {
 	client := &http.Client{
 		Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
+				Timeout:   defaultRequestTimeOut,
+				KeepAlive: defaultRequestTimeOut,
 			}).DialContext,
 			MaxIdleConns:          100,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 		},
-		Timeout: 30 * time.Second,
+		Timeout: defaultRequestTimeOut,
 	}
 
 	return &HttpClient{
@@ -195,7 +208,8 @@ func NewHttpClient(config *HttpConfig) *HttpClient {
 	}
 }
 
-func NewDefaultHttpClient(baseUrl string) *HttpClient {
+// Create a new default HttpClient with a custom transport for clean resource usage
+func NewDefaultHttpClient(baseURL string) *HttpClient {
 	client := &http.Client{
 		Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
@@ -211,7 +225,7 @@ func NewDefaultHttpClient(baseUrl string) *HttpClient {
 		Timeout: 30 * time.Second,
 	}
 
-	config := DefaultHttpConfig(baseUrl)
+	config := DefaultHttpConfig(baseURL)
 
 	return &HttpClient{
 		client: client,
@@ -219,65 +233,99 @@ func NewDefaultHttpClient(baseUrl string) *HttpClient {
 	}
 }
 
+//
+// Interface implementations
+//
 func (h *HttpClient) GetFrom(path string) (*http.Response, error) {
-	request, error := createRequest(h.config.baseUrl, path, http.MethodGet, nil, h.config.username, h.config.password)
-	if error != nil {
-		return nil, error
-	}
-	return h.executeRequest(request)
+	return h.GetFromWithContext(context.Background(), path)
 }
 
 func (h *HttpClient) PostTo(path string, body io.Reader) (*http.Response, error) {
-	request, error := createRequest(h.config.baseUrl, path, http.MethodPost, body, h.config.username, h.config.password)
-	if error != nil {
-		return nil, error
-	}
-	return h.executeRequest(request)
+	return h.PostToWithContext(context.Background(), path, body)
 }
 
 func (h *HttpClient) PutTo(path string, body io.Reader) (*http.Response, error) {
-	request, error := createRequest(h.config.baseUrl, path, http.MethodPut, body, h.config.username, h.config.password)
-	if error != nil {
-		return nil, error
-	}
-	return h.executeRequest(request)
+	return h.PutToWithContext(context.Background(), path, body)
 }
 
 func (h *HttpClient) DeleteFrom(path string) (*http.Response, error) {
-	request, error := createRequest(h.config.baseUrl, path, http.MethodDelete, nil, h.config.username, h.config.password)
-	if error != nil {
-		return nil, error
+	return h.DeleteFromWithContext(context.Background(), path)
+}
+
+func (h *HttpClient) GetFromWithContext(ctx context.Context, path string) (*http.Response, error) {
+	request, err := createRequest(ctx, h.config.baseURL, path, http.MethodGet, nil, h.config.username, h.config.password)
+	if err != nil {
+		return nil, err
 	}
-	return h.executeRequest(request)
+	requestWithCtx := request.WithContext(ctx)
+	return h.ExecuteRequest(requestWithCtx)
+}
+
+func (h *HttpClient) PostToWithContext(ctx context.Context, path string, body io.Reader) (*http.Response, error) {
+	request, err := createRequest(ctx, h.config.baseURL, path, http.MethodPost, body, h.config.username, h.config.password)
+	if err != nil {
+		return nil, err
+	}
+	requestWithCtx := request.WithContext(ctx)
+	return h.ExecuteRequest(requestWithCtx)
+}
+
+func (h *HttpClient) PutToWithContext(ctx context.Context, path string, body io.Reader) (*http.Response, error) {
+	request, err := createRequest(ctx, h.config.baseURL, path, http.MethodPut, body, h.config.username, h.config.password)
+	if err != nil {
+		return nil, err
+	}
+	requestWithCtx := request.WithContext(ctx)
+	return h.ExecuteRequest(requestWithCtx)
+}
+
+func (h *HttpClient) DeleteFromWithContext(ctx context.Context, path string) (*http.Response, error) {
+	request, err := createRequest(ctx, h.config.baseURL, path, http.MethodDelete, nil, h.config.username, h.config.password)
+	if err != nil {
+		return nil, err
+	}
+	requestWithCtx := request.WithContext(ctx)
+	return h.ExecuteRequest(requestWithCtx)
 }
 
 func (h *HttpClient) GetRequest(path string) (*http.Request, error) {
-	return createRequest(h.config.baseUrl, path, http.MethodGet, nil, h.config.username, h.config.password)
+	return createRequest(nil, h.config.baseURL, path, http.MethodGet, nil, h.config.username, h.config.password)
 }
 
 func (h *HttpClient) PostRequest(path string, body io.Reader) (*http.Request, error) {
-	return createRequest(h.config.baseUrl, path, http.MethodPost, body, h.config.username, h.config.password)
+	return createRequest(nil, h.config.baseURL, path, http.MethodPost, body, h.config.username, h.config.password)
 }
 
 func (h *HttpClient) PutRequest(path string, body io.Reader) (*http.Request, error) {
-	return createRequest(h.config.baseUrl, path, http.MethodPut, body, h.config.username, h.config.password)
+	return createRequest(nil, h.config.baseURL, path, http.MethodPut, body, h.config.username, h.config.password)
 }
 
 func (h *HttpClient) DeleteRequest(path string) (*http.Request, error) {
-	return createRequest(h.config.baseUrl, path, http.MethodDelete, nil, h.config.username, h.config.password)
+	return createRequest(nil, h.config.baseURL, path, http.MethodDelete, nil, h.config.username, h.config.password)
 }
 
-func createRequest(baseUrl string, endpoint string, method string, body io.Reader, username string, password string) (*http.Request, error) {
-	// construct url by appending endpoint to base url
-	baseUrl = strings.TrimSuffix(baseUrl, "/")
+//
+// Internal functions
+//
+func createDefaultContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx != nil {
+		return context.WithTimeout(ctx, defaultRequestTimeOut)
+	}
+	return context.WithTimeout(context.Background(), defaultRequestTimeOut)
+}
 
-	request, err := http.NewRequest(method, baseUrl+"/"+endpoint, body)
+func createRequest(ctx context.Context, baseURL string, endpoint string, method string, body io.Reader, username string, password string) (*http.Request, error) {
+	// construct url by appending endpoint to base url
+	baseURL = strings.TrimSuffix(baseURL, "/")
+	endpoint = strings.TrimPrefix(endpoint, "/")
+
+	request, err := http.NewRequest(method, baseURL+"/"+endpoint, body)
 	if err != nil {
 		return request, err
 	}
 
-	request.Header.Set("Content-Type", JSON_TYPE)
-	request.Header.Set("Accept", JSON_TYPE)
+	request.Header.Set("Content-Type", jsonType)
+	request.Header.Set("Accept", jsonType)
 
 	if username != "" && password != "" {
 		request.SetBasicAuth(username, password)
@@ -286,11 +334,17 @@ func createRequest(baseUrl string, endpoint string, method string, body io.Reade
 	return request, nil
 }
 
-func (h *HttpClient) executeRequest(r *http.Request) (*http.Response, error) {
-	resp, error := h.client.Do(r)
+func (h *HttpClient) ExecuteRequest(r *http.Request) (*http.Response, error) {
+	if r.Context() == context.Background() {
+		// TODO: handle Context's cancel function
+		ctx, _ := createDefaultContext(r.Context())
+		r = r.WithContext(ctx)
+	}
 
-	if error != nil {
-		return handleError(resp, error)
+	resp, err := h.client.Do(r)
+
+	if err != nil {
+		return handleError(resp, err)
 	}
 
 	return resp, nil
@@ -300,11 +354,11 @@ func handleError(resp *http.Response, error error) (*http.Response, error) {
 	log.Fatal(error)
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return resp, &UnauthorizedError{Message: "Authentication required.", Url: resp.Request.URL.String()}
+		return resp, &UnauthorizedError{Message: "Authentication required.", URL: resp.Request.URL.String()}
 	}
 
 	if resp.StatusCode == http.StatusNotFound {
-		return resp, &NotFoundError{Message: "Resource not found.", Url: resp.Request.URL.String()}
+		return resp, &NotFoundError{Message: "Resource not found.", URL: resp.Request.URL.String()}
 	}
 
 	return resp, &RemoteError{resp.Request.URL.Host, fmt.Errorf("%d: (%s)", resp.StatusCode, resp.Request.URL.String())}
