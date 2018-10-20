@@ -2,7 +2,6 @@ package http
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -36,28 +35,6 @@ type Client interface {
 	DeleteFromWithContext(ctx context.Context, path string) (*http.Response, error)
 }
 
-type RequestBuilder interface {
-	Get() RequestBuilder
-	Post() RequestBuilder
-	Put() RequestBuilder
-	Delete() RequestBuilder
-	Path(path string) RequestBuilder
-	QueryParam(key string, value string) RequestBuilder
-	WithContent(body io.Reader) RequestBuilder
-	AsJson() RequestBuilder
-	Request() (*http.Request, error)
-	Exec() (*http.Response, error)
-}
-
-type requestBuilder struct {
-	method      string
-	path        string
-	queryParams []string
-	body        io.Reader
-	request     *http.Request
-	accept      string
-}
-
 // HttpConfig holds the base configuration for the HttpClient.
 type HttpConfig struct {
 	baseURL  string
@@ -68,71 +45,8 @@ type HttpConfig struct {
 
 // HttpClient wraps the underlying http.Client and its HttpConfig.
 type HttpClient struct {
-	requestBuilder
 	client *http.Client
 	config *HttpConfig
-}
-
-func NewRequestBuilder() RequestBuilder {
-	return &requestBuilder{}
-}
-
-func (rb *requestBuilder) Get() RequestBuilder {
-	rb.method = http.MethodGet
-	return rb
-}
-
-func (rb *requestBuilder) Post() RequestBuilder {
-	rb.method = http.MethodPost
-	return rb
-}
-
-func (rb *requestBuilder) Put() RequestBuilder {
-	rb.method = http.MethodPut
-	return rb
-}
-
-func (rb *requestBuilder) Delete() RequestBuilder {
-	rb.method = http.MethodDelete
-	return rb
-}
-
-func (rb *requestBuilder) Path(path string) RequestBuilder {
-	rb.path = path
-	return rb
-}
-
-func (rb *requestBuilder) WithContent(body io.Reader) RequestBuilder {
-	rb.body = body
-	return rb
-}
-
-func (rb *requestBuilder) AsJson() RequestBuilder {
-	rb.accept = jsonType
-	return rb
-}
-
-func (rb *requestBuilder) QueryParam(key string, value string) RequestBuilder {
-	rb.queryParams = append(rb.queryParams, key, "=", value)
-	return rb
-}
-
-func (rb requestBuilder) Request() (*http.Request, error) {
-	request, err := http.NewRequest(rb.method, rb.path, rb.body)
-
-	if err != nil {
-		return request, err
-	}
-	return request, nil
-}
-
-// TODO: implement correctly
-func (rb requestBuilder) Exec() (*http.Response, error) {
-	if rb.request == nil {
-		return nil, errors.New("you must create a request using the request builder before calling Exec()")
-	}
-
-	return nil, nil
 }
 
 // NotFoundError allows to check for the not found url
@@ -181,12 +95,41 @@ func NewHttpConfig(baseURL string, username string, password string, accept stri
 	return config
 }
 
-func DefaultHttpConfig(baseURL string) *HttpConfig {
+func NewDefaultHttpConfig(baseURL string) *HttpConfig {
 	return NewHttpConfig(baseURL, "", "", jsonType)
 }
 
-// Create a new HttpClient with a custom transport for clean resource usage
-func NewHttpClient(config *HttpConfig) *HttpClient {
+// Create a new default HttpClient with a custom transport for clean resource usage
+func NewDefaultHttpClient(baseURL string) *HttpClient {
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   defaultRequestTimeOut,
+				KeepAlive: defaultRequestTimeOut,
+			}).DialContext,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+		Timeout: defaultRequestTimeOut,
+	}
+
+	config := NewDefaultHttpConfig(baseURL)
+
+	return &HttpClient{
+		client: client,
+		config: config,
+	}
+}
+
+// NewHttpClientWithConfig creates a new HttpClient with given HttpConfig and a custom transport for clean resource usage
+func NewHttpClientWithConfig(config *HttpConfig) *HttpClient {
+	if config == nil {
+		panic("config is nil")
+	}
+
 	client := &http.Client{
 		Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
@@ -208,24 +151,14 @@ func NewHttpClient(config *HttpConfig) *HttpClient {
 	}
 }
 
-// Create a new default HttpClient with a custom transport for clean resource usage
-func NewDefaultHttpClient(baseURL string) *HttpClient {
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		},
-		Timeout: 30 * time.Second,
+// NewHttpClientWithConfigAndClient creates a new HttpClient with given HttpConfig and a custom http.Client.
+func NewHttpClientWithConfigAndClient(config *HttpConfig, client *http.Client) *HttpClient {
+	if config == nil {
+		panic("config is nil")
 	}
-
-	config := DefaultHttpConfig(baseURL)
+	if client == nil {
+		panic("client is nil")
+	}
 
 	return &HttpClient{
 		client: client,
@@ -362,4 +295,91 @@ func handleError(resp *http.Response, error error) (*http.Response, error) {
 	}
 
 	return resp, &RemoteError{resp.Request.URL.Host, fmt.Errorf("%d: (%s)", resp.StatusCode, resp.Request.URL.String())}
+}
+
+type RequestBuilder interface {
+	Get() RequestBuilder
+	Post() RequestBuilder
+	Put() RequestBuilder
+	Delete() RequestBuilder
+	Path(path string) RequestBuilder
+	QueryParam(key string, value string) RequestBuilder
+	WithContent(body io.Reader) RequestBuilder
+	AsJson() RequestBuilder
+	Build() (*http.Request, error)
+}
+
+type requestBuilder struct {
+	method      string
+	path        string
+	queryParams map[string]interface{}
+	body        io.Reader
+	request     *http.Request
+	accept      string
+}
+
+func NewRequestBuilder() RequestBuilder {
+	return &requestBuilder{}
+}
+
+func (rb *requestBuilder) Get() RequestBuilder {
+	rb.method = http.MethodGet
+	return rb
+}
+
+func (rb *requestBuilder) Post() RequestBuilder {
+	rb.method = http.MethodPost
+	return rb
+}
+
+func (rb *requestBuilder) Put() RequestBuilder {
+	rb.method = http.MethodPut
+	return rb
+}
+
+func (rb *requestBuilder) Delete() RequestBuilder {
+	rb.method = http.MethodDelete
+	return rb
+}
+
+func (rb *requestBuilder) Path(path string) RequestBuilder {
+	rb.path = path
+	return rb
+}
+
+func (rb *requestBuilder) WithContent(body io.Reader) RequestBuilder {
+	rb.body = body
+	return rb
+}
+
+func (rb *requestBuilder) AsJson() RequestBuilder {
+	rb.accept = jsonType
+	return rb
+}
+
+func (rb *requestBuilder) QueryParam(key string, value string) RequestBuilder {
+	if rb.queryParams == nil {
+		rb.queryParams = make(map[string]interface{})
+	}
+	rb.queryParams[key] = value
+	return rb
+}
+
+func (rb *requestBuilder) Build() (*http.Request, error) {
+	request, err := http.NewRequest(rb.method, rb.path, rb.body)
+
+	if rb.queryParams != nil {
+		queryValues := request.URL.Query()
+
+		for key, value := range rb.queryParams {
+			queryValues.Add(key, value.(string))
+		}
+
+		request.URL.Query()
+	}
+
+	if err != nil {
+		return request, err
+	}
+	return request, nil
 }

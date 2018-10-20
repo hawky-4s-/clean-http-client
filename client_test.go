@@ -19,7 +19,7 @@ const (
 )
 
 func TestDefaultHttpConfig(t *testing.T) {
-	defaultHttpConfig := DefaultHttpConfig(fixtureBaseURL)
+	defaultHttpConfig := NewDefaultHttpConfig(fixtureBaseURL)
 
 	if defaultHttpConfig.baseURL != fixtureBaseURL {
 		t.Errorf("Expected %s but got %s", fixtureBaseURL, defaultHttpConfig.baseURL)
@@ -57,7 +57,7 @@ func TestNewDefaultHttpClient(t *testing.T) {
 
 func TestNewHttpClient(t *testing.T) {
 	customHTTPConfig := NewHttpConfig(fixtureBaseURL, "", "", contentTypeJSON)
-	client := NewHttpClient(customHTTPConfig)
+	client := NewHttpClientWithConfig(customHTTPConfig)
 
 	httpConfig := client.config
 
@@ -184,7 +184,7 @@ func mockServerWith(handlerFunc http.HandlerFunc) *httptest.Server {
 
 func createTestHTTPClient(baseURL string) *HttpClient {
 	config := NewHttpConfig(baseURL, "", "", contentTypeJSON)
-	return NewHttpClient(config)
+	return NewHttpClientWithConfig(config)
 }
 
 func assertResponseHasStatus(resp *http.Response, statusCode int, t *testing.T) {
