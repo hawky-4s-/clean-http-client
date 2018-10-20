@@ -1,0 +1,8 @@
+language: go
+go:
+	- stable
+	- tip
+
+script:
+	- go version
+	- go test -v ./...
