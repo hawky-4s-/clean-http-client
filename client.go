@@ -375,7 +375,7 @@ func (rb *requestBuilder) Build() (*http.Request, error) {
 			queryValues.Add(key, value.(string))
 		}
 
-		request.URL.Query()
+		request.URL.RawQuery = queryValues.Encode()
 	}
 
 	if err != nil {
